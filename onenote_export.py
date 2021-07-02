@@ -71,8 +71,8 @@ def get(graph_client, url, params=None, indent=0):
         if resp.status_code == 429:
             # We are being throttled due to too many requests.
             # See https://docs.microsoft.com/en-us/graph/throttling
-            indent_print(indent, 'Too many requests, waiting 20s and trying again.')
-            time.sleep(20)
+            indent_print(indent, 'Too many requests, waiting 300s and trying again.')
+            time.sleep(300)
         elif resp.status_code == 500:
             # In my case, one specific note page consistently gave this status
             # code when trying to get the content. The error was "19999:
@@ -88,9 +88,12 @@ def get(graph_client, url, params=None, indent=0):
             return resp
 
 
-def download_attachments(graph_client, content, out_dir, indent=0):
-    image_dir = out_dir / 'images'
-    attachment_dir = out_dir / 'attachments'
+def download_attachments(graph_client, content, out_dir, page_title, indent=0):
+    dir_name = page_title + '.files'
+    #image_dir = out_dir / page_title
+    #attachment_dir = out_dir / page_title
+    image_dir = out_dir / dir_name
+    attachment_dir = out_dir / dir_name
 
     class MyHTMLParser(HTMLParser):
         def handle_starttag(self, tag, attrs):
@@ -117,7 +120,7 @@ def download_attachments(graph_client, content, out_dir, indent=0):
         image_dir.mkdir(exist_ok=True)
         with open(image_dir / file_name, "wb") as f:
             f.write(img)
-        props['src'] = "images/" + file_name
+        props['src'] = dir_name + "/" + file_name
         props = {k: v for k, v in props.items() if 'data-fullres-src' not in k}
         return generate_html('img', props)
 
@@ -140,7 +143,8 @@ def download_attachments(graph_client, content, out_dir, indent=0):
             attachment_dir.mkdir(exist_ok=True)
             with open(attachment_dir / file_name, "wb") as f:
                 f.write(data)
-        props['data'] = "attachments/" + file_name
+        #props['data'] = page_title + "/" + file_name
+        props['data'] = dir_name + "/" + file_name
         return generate_html('object', props)
 
     content = re.sub(r"<img .*?\/>", download_image, content, flags=re.DOTALL)
@@ -172,8 +176,8 @@ def download_notebooks(graph_client, path, select=None, indent=0):
         sections = get_json(graph_client, nb['sectionsUrl'])
         section_groups = get_json(graph_client, nb['sectionGroupsUrl'])
         indent_print(indent + 1, f'Got {len(sections)} sections and {len(section_groups)} section groups.')
-        download_sections(graph_client, sections, path / nb_name, select, indent=indent + 1)
-        download_section_groups(graph_client, section_groups, path / nb_name, select, indent=indent + 1)
+        download_sections(graph_client, sections, path / (nb_name + '.nodes'), select, indent=indent + 1)
+        download_section_groups(graph_client, section_groups, path / (nb_name + '.nodes'), select, indent=indent + 1)
 
 
 def download_section_groups(graph_client, section_groups, path, select=None, indent=0):
@@ -183,7 +187,7 @@ def download_section_groups(graph_client, section_groups, path, select=None, ind
         indent_print(indent, f'Opening section group {sg_name}')
         sections = get_json(graph_client, sg['sectionsUrl'])
         indent_print(indent + 1, f'Got {len(sections)} sections.')
-        download_sections(graph_client, sections, path / sg_name, select, indent=indent + 1)
+        download_sections(graph_client, sections, path / (sg_name + '.nodes'), select, indent=indent + 1)
 
 
 def download_sections(graph_client, sections, path, select=None, indent=0):
@@ -193,27 +197,31 @@ def download_sections(graph_client, sections, path, select=None, indent=0):
         indent_print(indent, f'Opening section {sec_name}')
         pages = get_json(graph_client, sec['pagesUrl'] + '?pagelevel=true')
         indent_print(indent + 1, f'Got {len(pages)} pages.')
-        download_pages(graph_client, pages, path / sec_name, select, indent=indent + 1)
+        download_pages(graph_client, pages, path / (sec_name + '.nodes'), select, indent=indent + 1)
 
 
 def download_pages(graph_client, pages, path, select=None, indent=0):
     pages, select = filter_items(pages, select, 'pages', indent)
     pages = sorted([(page['order'], page) for page in pages])
     level_dirs = [None] * 4
+    level_dirs[0] = path
+    prev_page_title = ''
+    prev_level = 0
     for order, page in pages:
         level = page['level']
-        page_title = sanitize_filename(f'{order} {page["title"]}', platform='auto')
+        page_title = sanitize_filename(f'{page["title"]}', platform='auto')
         indent_print(indent, f'Opening page {page_title}')
-        if level == 0:
-            page_dir = path / page_title
-        else:
-            page_dir = level_dirs[level - 1] / page_title
-        level_dirs[level] = page_dir
-        download_page(graph_client, page['contentUrl'], page_dir, indent=indent + 1)
+        if level != 0 and level - prev_level > 0 :
+                page_dir = level_dirs[level - 1] / prev_page_title
+                level_dirs[level] = page_dir
+        download_page(graph_client, page['contentUrl'], level_dirs[level], page_title, indent=indent + 1)
+        #prev_page_title = page_title
+        prev_page_title = page_title + '.nodes'
+        prev_level = level
 
 
-def download_page(graph_client, page_url, path, indent=0):
-    out_html = path / 'main.html'
+def download_page(graph_client, page_url, path, page_title, indent=0):
+    out_html = path / (page_title +'.html')
     if out_html.exists():
         indent_print(indent, 'HTML file already exists; skipping this page')
         return
@@ -222,7 +230,7 @@ def download_page(graph_client, page_url, path, indent=0):
     if response is not None:
         content = response.text
         indent_print(indent, f'Got content of length {len(content)}')
-        content = download_attachments(graph_client, content, path, indent=indent)
+        content = download_attachments(graph_client, content, path, page_title, indent=indent)
         with open(out_html, "w", encoding='utf-8') as f:
             f.write(content)
 
